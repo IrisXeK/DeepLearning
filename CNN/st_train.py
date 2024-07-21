@@ -2,6 +2,9 @@ import time
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import torchvision
+from torchvision import transforms
+from torch.utils import data
 
 class Timer:
     def __init__(self):
@@ -77,6 +80,20 @@ def std_get_MINST_labels(labels):
                    'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
     return [text_labels[int(i)] for i in labels]
 
+def load_MINST_data(batch_size, num_workers=16, resize:tuple=None):
+    trans = [transforms.ToTensor()]
+    if resize is not None:
+        trans.append(transforms.Resize(size=resize))
+    trans = transforms.Compose(trans)
+    return (data.DataLoader(torchvision.datasets.FashionMNIST(root='./data', train=True,
+                                                            transform=trans,
+                                                            download=True),
+                            num_workers=16, batch_size=batch_size, shuffle=True),
+            data.DataLoader(torchvision.datasets.FashionMNIST(root='./data', train=False,
+                                                            transform=trans,
+                                                            download=True),
+                            num_workers=16, batch_size=batch_size, shuffle=False))
+
 def std_accuracy(y_hat, y):  # 计算预测正确的数量
     """
     如果y_hat存储的是矩阵,假定第二个维度存储每个类的预测分数
@@ -136,14 +153,15 @@ def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res
                 optimizer.step()
                 with torch.no_grad():
                     metric.add(loss * X.shape[0], std_accuracy(y_hat, y), X.shape[0])
-            train_loss = metric[0] / metric[2]
-            train_acc = metric[1] / metric[2]
-            Res.res_dict['train_loss'].append(train_loss)
-            Res.res_dict['train_acc'].append(train_acc)
-            test_acc = std_evaluate_accuracy_gpu(net, test_iter)
-            Res.res_dict['test_acc'].append(test_acc)
-            print(f'loss {train_loss:.3f}, train acc {train_acc:.3f}, test acc {test_acc:.3f}')
-            print(f'{metric[2] * num_epochs / timer.elapsed_time:.1f} examples/sec on {str(device)}')
+        train_loss = metric[0] / metric[2]
+        train_acc = metric[1] / metric[2]
+        test_acc = std_evaluate_accuracy_gpu(net, test_iter)
+        Res.res_dict['train_loss'].append(train_loss)
+        Res.res_dict['train_acc'].append(train_acc)
+        Res.res_dict['test_acc'].append(test_acc)
+        print(f'Epoch:{epoch+1}, 训练损失:{train_loss:.3f}, 训练准确率:{train_acc:.3f}, 测试准确率:{test_acc:.3f}')
+    print(f'训练结束。损失: {train_loss:.3f}, 训练准确率: {train_acc:.3f}, 测试准确率: {test_acc:.3f}')
+    print(f'{metric[2] * num_epochs / timer.elapsed_time:.1f} 样本/秒 在 {str(device)}')
     
 def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: ResVisualization):  # 训练模型
     for epoch in range(num_epochs):
@@ -192,4 +210,24 @@ def std_prediction(net, test_set, n=6):
             axes[i].set_title(titles[i])
             axes[i].axis('off')
 
+def std_prediction_gpu(net, test_set, n=6, device=None):
+    if isinstance(net, nn.Module):
+        net.eval()  # 模型设置为评估模式
+        if not device:
+            device = next(iter(net.parameters())).device
+    for X, y in test_set:
+        if isinstance(X, list):
+                X = [x.to(device) for x in X]  # BERT微调所需的
+        else:
+            X = X.to(device)
+        y = y.to(device)
+        _, axes = plt.subplots(1, n, figsize=(8, 8))
+        true_labels = std_get_MINST_labels(y)
+        pred_labels = std_get_MINST_labels(net(X).argmax(axis=1))
+        titles = ['T:' + true + '\n' + 'P:' + pred for true,
+                  pred in zip(true_labels, pred_labels)]
+        for i in range(n):
+            axes[i].imshow(X[i].reshape((28, 28)).cpu())
+            axes[i].set_title(titles[i])
+            axes[i].axis('off')
 
