@@ -11,6 +11,7 @@ class Timer:
         self.start_time = None
         self.end_time = None
         self.elapsed_time = None
+        self.elapsed_time_sum = 0
 
     def start(self):
         self.start_time = time.time()
@@ -22,6 +23,7 @@ class Timer:
             raise ValueError("Timer has not been started.")
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
+        self.elapsed_time_sum += self.elapsed_time
 
     def get_elapsed_time(self):
         if self.elapsed_time is None:
@@ -161,7 +163,7 @@ def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res
         Res.res_dict['test_acc'].append(test_acc)
         print(f'Epoch:{epoch+1}, 训练损失:{train_loss:.3f}, 训练准确率:{train_acc:.3f}, 测试准确率:{test_acc:.3f}')
     print(f'训练结束。损失: {train_loss:.3f}, 训练准确率: {train_acc:.3f}, 测试准确率: {test_acc:.3f}')
-    print(f'{metric[2] * num_epochs / timer.elapsed_time:.1f} 样本/秒 在 {str(device)}')
+    print(f'{metric[2] * num_epochs / timer.elapsed_time_sum:.1f} 样本/秒 在 {str(device)}')
     
 def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: ResVisualization):  # 训练模型
     for epoch in range(num_epochs):
@@ -210,7 +212,11 @@ def std_prediction(net, test_set, n=6):
             axes[i].set_title(titles[i])
             axes[i].axis('off')
 
-def std_prediction_gpu(net, test_set, n=6, device=None):
+def std_prediction_gpu(net, test_set, n=6, device=None, resized=False):
+    transform = transforms.Compose([
+                            transforms.ToPILImage(),
+                            transforms.Resize((28, 28)),
+                            transforms.ToTensor()])
     if isinstance(net, nn.Module):
         net.eval()  # 模型设置为评估模式
         if not device:
@@ -226,8 +232,11 @@ def std_prediction_gpu(net, test_set, n=6, device=None):
         pred_labels = std_get_MINST_labels(net(X).argmax(axis=1))
         titles = ['T:' + true + '\n' + 'P:' + pred for true,
                   pred in zip(true_labels, pred_labels)]
+        
         for i in range(n):
-            axes[i].imshow(X[i].reshape((28, 28)).cpu())
+            if not resized:
+                axes[i].imshow(X[i].reshape((28, 28)).cpu())
+            else:
+                axes[i].imshow(transform(X[i]).reshape(28,28).cpu())
             axes[i].set_title(titles[i])
             axes[i].axis('off')
-
