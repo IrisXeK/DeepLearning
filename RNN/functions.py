@@ -1,11 +1,51 @@
-import sys
-import os
-import torch
-import torchvision
-import torch.nn as nn
-from torch.utils import data
+import sys, os, hashlib, requests, zipfile, tarfile, torchvision, torch
 import matplotlib.pyplot as plt
+from torch import nn
+from torch.utils import data
 from torchvision import transforms
+DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
+
+def download(DATA_HUB, name, save_folder_name:str): # save_folder_name指定存储在当前目录下的data/save_folder_name下
+    """下载一个DATA_HUB中的文件并返回本地文件名"""
+    assert name in DATA_HUB, f"{name} 不存在于 {DATA_HUB}"
+    cache_dir=os.path.join('data', save_folder_name)
+    url, sha1_hash = DATA_HUB[name]
+    os.makedirs(cache_dir, exist_ok=True)
+    fname = os.path.join(cache_dir, url.split('/')[-1])
+    if os.path.exists(fname):
+        sha1 = hashlib.sha1() # 计算给定字符串的SHA-1哈希值
+        with open(fname, 'rb') as f:
+            while True:
+                data = f.read(1048576) # 参数:读取1MB内容
+                if not data:
+                    break
+                sha1.update(data)
+        if sha1.hexdigest() == sha1_hash: # 检查哈希值判定文件是否已经存在
+            return fname # 命中缓存
+    print(f'正在从{url}下载{fname}...')
+    r = requests.get(url, stream=True, verify=True)
+    with open(fname, 'wb') as f:
+        f.write(r.content)
+    return fname
+
+def download_extract(name, folder=None):
+    """下载并解压zip/tar文件"""
+    fname = download(name)
+    base_dir = os.path.dirname(fname) # dirname(name)查询name文件所在的文件夹的路径
+    data_dir, ext = os.path.splitext(fname) # splitext 将文件名与文件后缀(如.zip)分割为具有两元素的元组
+    if ext == '.zip':
+        fp = zipfile.ZipFile(fname, 'r')
+    elif ext in ('.tar', '.gz'):
+        fp = tarfile.open(fname, 'r')
+    else:
+        assert False, '只有zip/tar文件可以被解压缩'
+    fp.extractall(base_dir) # 将压缩的文件解压到base_dir路径下
+    return os.path.join(base_dir, folder) if folder else data_dir
+
+def download_all(DATA_HUB):
+    """下载DATA_HUB中的所有文件"""
+    for name in DATA_HUB:
+        download(name)
 
 
 class Accumulator:  # 累加多个变量的实用程序类
@@ -20,7 +60,6 @@ class Accumulator:  # 累加多个变量的实用程序类
 
     def __getitem__(self, idx):
         return self.data[idx]
-
 
 class ResVisualization:
     def __init__(self, legend_name: tuple, num_epochs) -> None:
