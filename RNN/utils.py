@@ -1,9 +1,34 @@
-import sys, os, hashlib, requests, zipfile, tarfile, torchvision, torch
+import os, hashlib, requests, zipfile, tarfile, torch, random, text_pretreatment
 import matplotlib.pyplot as plt
 from torch import nn
-from torch.utils import data
-from torchvision import transforms
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
+
+class Accumulator:  # 累加多个变量的实用程序类
+    def __init__(self, n):
+        self.data = [0.0]*n
+
+    def add(self, *args):  # 在data的对应位置加上对应的数
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+class ResVisualization:
+    def __init__(self, legend_name: tuple, num_epochs) -> None:
+        self.res_dict = {name: [] for name in legend_name}
+        self.num_epochs = num_epochs
+
+    def plot_res(self):
+        for legend_name, data in self.res_dict.items():
+            plt.plot(list(range(self.num_epochs)), data, label=legend_name)
+        plt.title("Result")
+        plt.xlabel("num_epochs")
+        plt.ylabel("ResultValue")
+        plt.legend()
+        plt.show()
 
 def download(DATA_HUB, name, save_folder_name:str): # save_folder_name指定存储在当前目录下的data/save_folder_name下
     """下载一个DATA_HUB中的文件并返回本地文件名"""
@@ -47,38 +72,72 @@ def download_all(DATA_HUB):
     for name in DATA_HUB:
         download(name)
 
+class SeqDataLoader:
+    """
+    加载序列数据的迭代器
+    """
+    def __init__(self, batch_size, num_steps, max_tokens, use_random_iter) -> None:
+        if use_random_iter: 
+            self.data_iter_fn = self.get_random_batch_seq
+        else: 
+            self.data_iter_fn = self.get_sequential_batch_seq
+        self.corpus, self.vocab = text_pretreatment.load_time_machine_corpus(max_tokens)
+        self.batch_size, self.num_steps = batch_size, num_steps
 
-class Accumulator:  # 累加多个变量的实用程序类
-    def __init__(self, n):
-        self.data = [0.0]*n
+    def __iter__(self):
+        return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
+    
+    def get_random_batch_seq(corpus, batch_size, num_steps):
+        """
+        使用随机抽样生成一个小批量序列\n
+        corpus : 语料库
+        batch_size : 一个小批量中有多少个子序列样本
+        num_steps : 每个序列预定义的时间步数
+        """
+        def get_seq(pos):
+            """
+            返回从pos位置开始的长度为num_steps的序列\n
+            pos : 一个偏移量
+            """
+            return corpus[pos: pos + num_steps]
 
-    def add(self, *args):  # 在data的对应位置加上对应的数
-        self.data = [a + float(b) for a, b in zip(self.data, args)]
+        corpus = corpus[random.randint(0, num_steps - 1):] # 随机选择起始分区的偏移量,随机范围包括num_steps-1  减去1是因为需要考虑标签
+        num_subseqs = (len(corpus) - 1) // num_steps # 整个批量中子序列的数量
+        initial_indices = list(range(0, num_subseqs * num_steps, num_steps)) # 长度为num_step的每个子序列的起始索引
+        random.shuffle(initial_indices) #  在随机抽样的迭代过程中,来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
+        num_batches = num_subseqs // batch_size # 整个批量可被分成的小批量的数量
+        for i in range(0, batch_size * num_batches, batch_size): # 迭代小批量
+            initial_indices_per_batch = initial_indices[i : i+batch_size] # 在这里，initial_indices包含子序列的随机起始索引
+            X = [get_seq(j) for j in initial_indices_per_batch]
+            Y = [get_seq(j+1) for j in initial_indices_per_batch]
+            yield torch.tensor(X), torch.tensor(Y) # 特征 和 对应的标签
 
-    def reset(self):
-        self.data = [0.0] * len(self.data)
+    def get_sequential_batch_seq(corpus, batch_size, num_steps):
+        """
+        使用顺序分区生成一个小批量子序列\n
+        corpus : 语料库
+        batch_size : 一个小批量中有多少个子序列样本
+        num_steps : 每个序列预定义的时间步数
+        """
+        offset = random.randint(0,num_steps-1) # 用随机偏移量划分序列
+        num_tokens = ((len(corpus)-offset-1) // batch_size) * batch_size # token数
+        Xs = torch.tensor(corpus[offset : offset + num_tokens])
+        Ys = torch.tensor(corpus[offset+1 : offset + num_tokens + 1])
+        Xs, Ys = Xs.reshape(batch_size, -1), Ys.reshape(batch_size, -1)
+        num_batches = Xs.shape[1] // num_steps # 小批量的个数
+        for i in range(0, num_batches*num_steps, num_steps):
+            X = Xs[: ,i:i + num_steps] # 特征
+            Y = Ys[: ,i:i + num_steps] # 标签
+            yield X, Y
+    
+def load_time_machine_data(batch_size, num_steps, 
+                           max_tokens=10000, use_random_iter=False):
+    """
+    返回时光机器数据集的迭代器和词表
+    """
+    data_iter = SeqDataLoader(batch_size, num_steps, max_tokens, use_random_iter)
+    return data_iter, data_iter.vocab
 
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-class ResVisualization:
-    def __init__(self, legend_name: tuple, num_epochs) -> None:
-        self.res_dict = {name: [] for name in legend_name}
-        self.num_epochs = num_epochs
-
-    def plot_res(self):
-        for legend_name, data in self.res_dict.items():
-            plt.plot(list(range(self.num_epochs)), data, label=legend_name)
-        plt.title("Result")
-        plt.xlabel("num_epochs")
-        plt.ylabel("ResultValue")
-        plt.legend()
-        plt.show()
-
-def std_get_MINST_labels(labels): # 获取训练集中的数据对应的标签 labels参数传入 MINST_train.train_labels
-    text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
-                   'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
-    return [text_labels[int(i)] for i in labels]
 
 def std_accuracy(y_hat, y):  # 计算预测正确的数量
     """
@@ -136,16 +195,3 @@ def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: Res
     assert train_loss < 0.7, train_loss
     assert train_accuracy <= 1 and train_accuracy > 0.7, train_accuracy
     assert test_accurancy <= 1 and test_accurancy > 0.7, test_accurancy
-
-
-def std_prediction(net, test_set, n=6):
-    for X, y in test_set:
-        _, axes = plt.subplots(1, n, figsize=(8, 8))
-        true_labels = std_get_MINST_labels(y)
-        pred_labels = std_get_MINST_labels(net(X).argmax(axis=1))
-        titles = ['T:' + true + '\n' + 'P:' + pred for true,
-                  pred in zip(true_labels, pred_labels)]
-        for i in range(n):
-            axes[i].imshow(X[i].reshape((28, 28)))
-            axes[i].set_title(titles[i])
-            axes[i].axis('off')
