@@ -65,9 +65,9 @@ class ResVisualization:
         plt.legend()
         plt.show()
 
-# 获取训练集中的数据对应的标签 labels参数传入 MINST_train.train_labels
+
 def try_gpu(i=0):
-    # 如果存在,返回gpu(i), 否则返回cpu()
+    """如果存在,返回gpu(i), 否则返回cpu()"""
     if torch.cuda.device_count() >= i+1:
         return torch.device(f'cuda:{i}')
     return torch.device('cpu')
@@ -78,6 +78,7 @@ def try_all_gpus():
     return devices if devices else [torch.device('cpu')]
 
 def std_get_MINST_labels(labels):
+    """获取训练集中的数据对应的标签 labels参数传入 MINST_train.train_labels"""
     text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
                    'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
     return [text_labels[int(i)] for i in labels]

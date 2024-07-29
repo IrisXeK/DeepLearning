@@ -1,6 +1,7 @@
-import os, hashlib, requests, zipfile, tarfile, torch, random, text_pretreatment
+import os, hashlib, requests, zipfile, tarfile, torch, random, text_pretreatment, time, math
 import matplotlib.pyplot as plt
 from torch import nn
+
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
 class Accumulator:  # 累加多个变量的实用程序类
@@ -17,18 +18,87 @@ class Accumulator:  # 累加多个变量的实用程序类
         return self.data[idx]
 
 class ResVisualization:
-    def __init__(self, legend_name: tuple, num_epochs) -> None:
-        self.res_dict = {name: [] for name in legend_name}
-        self.num_epochs = num_epochs
+    def __init__(self, xlist:tuple, ylist:tuple, legend_names, is_grid=None,
+                xlabel:str=None, ylabel:str=None, title:str=None,
+                xlim:list=None, ylim:list=None, line_style:str='-') -> None:
+        """
+        xlist : 二维数组,每一行代表一个曲线的x坐标\n
+        ylist : 二维数组,每一行代表一个曲线的y坐标\n
+        legend_names : 列表，代表每条曲线的名字\n
+        is_grid : 是否显示网格\n
+        xlabel : x轴的名字\n
+        ylabel : y轴的名字\n
+        title : 图的名字\n
+        xlim : x轴的范围\n
+        ylim : y轴的范围\n
+        line_style : 曲线的样式\n
+        """
+        if isinstance(legend_names, (tuple, list)):
+            self.res_dict = {name:(x, y) for name, x, y in zip(legend_names, xlist, ylist)}
+        else:
+            self.res_dict = {legend_names:(xlist,ylist)}
+        self.is_grid = is_grid
+        self.xlim = xlim
+        self.ylim  = ylim
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        self.title  = title
+        self.line_style = line_style
+
+    def add(self, x_val, y_val, name):
+        """向名为name的曲线中添加一个(x_val, y_val)数据对"""
+        self.res_dict[name][0].append(x_val)
+        self.res_dict[name][1].append(y_val)
 
     def plot_res(self):
-        for legend_name, data in self.res_dict.items():
-            plt.plot(list(range(self.num_epochs)), data, label=legend_name)
-        plt.title("Result")
-        plt.xlabel("num_epochs")
-        plt.ylabel("ResultValue")
+        for name, xy_pair in self.res_dict.items():
+            plt.plot(xy_pair[0], xy_pair[1], label=name, linestyle=self.line_style)
+        if self.is_grid:
+            plt.grid()
+        if self.title is not None:
+            plt.title(self.title)
+        if self.xlabel is not None:
+            plt.xlabel(self.xlabel)
+        if self.ylabel is not None:
+            plt.ylabel(self.ylabel)
+        if self.xlim is not None:
+            plt.xlim(self.xlim)
+        if self.ylim is not None:
+            plt.ylim(self.ylim)
         plt.legend()
         plt.show()
+
+class Timer:
+    def __init__(self):
+        self.start_time = None
+        self.end_time = None
+        self.elapsed_time = None
+        self.elapsed_time_sum = 0
+
+    def start(self):
+        self.start_time = time.time()
+        self.end_time = None
+        self.elapsed_time = None
+
+    def stop(self):
+        if self.start_time is None:
+            raise ValueError("Timer has not been started.")
+        self.end_time = time.time()
+        self.elapsed_time = self.end_time - self.start_time
+        self.elapsed_time_sum += self.elapsed_time
+
+    def get_elapsed_time(self):
+        if self.elapsed_time is None:
+            raise ValueError("Timer has not been stopped yet.")
+        return self.elapsed_time
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.stop()
+        # print(f"Elapsed time: {self.get_elapsed_time():.4f} seconds")
 
 def download(DATA_HUB, name, save_folder_name:str): # save_folder_name指定存储在当前目录下的data/save_folder_name下
     """下载一个DATA_HUB中的文件并返回本地文件名"""
@@ -87,7 +157,7 @@ class SeqDataLoader:
     def __iter__(self):
         return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
     
-    def get_random_batch_seq(corpus, batch_size, num_steps):
+    def get_random_batch_seq(self, corpus, batch_size, num_steps):
         """
         使用随机抽样生成一个小批量序列\n
         corpus : 语料库
@@ -112,7 +182,7 @@ class SeqDataLoader:
             Y = [get_seq(j+1) for j in initial_indices_per_batch]
             yield torch.tensor(X), torch.tensor(Y) # 特征 和 对应的标签
 
-    def get_sequential_batch_seq(corpus, batch_size, num_steps):
+    def get_sequential_batch_seq(self, corpus, batch_size, num_steps):
         """
         使用顺序分区生成一个小批量子序列\n
         corpus : 语料库
@@ -133,11 +203,16 @@ class SeqDataLoader:
 def load_time_machine_data(batch_size, num_steps, 
                            max_tokens=10000, use_random_iter=False):
     """
-    返回时光机器数据集的迭代器和词表
+    返回时光机器数据集的 迭代器、词表
     """
     data_iter = SeqDataLoader(batch_size, num_steps, max_tokens, use_random_iter)
     return data_iter, data_iter.vocab
 
+def try_gpu(i=0):
+    """如果存在,返回gpu(i), 否则返回cpu()"""
+    if torch.cuda.device_count() >= i+1:
+        return torch.device(f'cuda:{i}')
+    return torch.device('cpu')
 
 def std_accuracy(y_hat, y):  # 计算预测正确的数量
     """
@@ -149,6 +224,12 @@ def std_accuracy(y_hat, y):  # 计算预测正确的数量
     cmp = y_hat.type(y.dtype) == y
     return float(cmp.type(y.dtype).sum())
 
+def sgd(params:list, lr, batch_size):
+    """小批量剃度下降优化函数"""
+    with torch.no_grad():
+        for param in params:
+            param -= lr * param.grad / batch_size # 更新参数
+            param.grad.zero_() # 清除累积的梯度
 
 def std_evaluate_accuracy(net, data_iter):  # 对于任何data_iter可访问的数据集 都可以评估模型的精度
     if isinstance(net, nn.Module):
@@ -159,39 +240,89 @@ def std_evaluate_accuracy(net, data_iter):  # 对于任何data_iter可访问的�
             metric.add(std_accuracy(net(X), y), y.numel())
     return metric[0] / metric[1]
 
-
-def std_train_epoch(net, train_set, loss_function, updater):  # 模型在训练周期中的一次训练
-    """
-    updater是更新模型参数的函数,接收批量大小作为参数
-    updater可以是sgd函数 也可以是框架内的内置函数
-    """
+def grad_clipping(net, theta):
+    """裁剪梯度"""
     if isinstance(net, nn.Module):
-        net.train()
-    metric = Accumulator(3)  # 三个位置为 训练损失总和 训练准确数 样本数
-    for X, y in train_set:
-        y_hat = net(X)  # 给出一次预测
-        loss = loss_function(y_hat, y)  # 计算损失
-        if isinstance(updater, torch.optim.Optimizer):  # updater为Pytorch框架的内置优化器
-            updater.zero_grad()  # 将grad置为0 因为pytorch计算梯度时会累加
-            loss.mean().backward()  # 计算梯度
-            updater.step()  # 由计算出的梯度更新参数
-        else:  # 使用的是定制的优化器和损失函数
-            loss.sum().backward()
-            updater(X.shape[0])
-    metric.add(float(loss.sum()), std_accuracy(y_hat, y), y.numel())
-    return metric[0] / metric[2], metric[1] / metric[2]  # 返回训练损失和训练精度
+        params = [p for p in net.parameters() if p.requires_grad]
+    else:
+        params = net.params
+    norm = torch.sqrt(sum(torch.sum((p.grad ** 2)) for p in params))
+    if norm > theta:
+        for param in params:
+            param.grad[:] *= theta / norm
 
+def predict_rnn(prefix, num_preds, net, vocab, device):
+    """
+    这个函数用于在prefix后面生成新字符\n
+    prefix : 一个用户提供的包含多个字符的字符串\n
+    在循环遍历prefix中的开始字符时,不断地将隐状态传递到下一个时间步，但是不生成任何输出。称为预热(warm-up)期,
+    在此期间模型会自我更新(例如，更新隐状态),但不会进行预测。
+    预热期结束后，隐状态的值通常比刚开始的初始值更适合预测，从而预测字符并输出它们。
+    """
+    state = net.begin_state(batch_size=1, device=device)
+    outputs = [vocab[prefix[0]]]
+    get_input = lambda: torch.tensor([outputs[-1]], device=device).reshape((1, 1))
+    for y in prefix[1:]: # 预热期
+        _, state = net(get_input(), state) # 更新隐状态
+        outputs.append(vocab[y])
+    for _ in range(num_preds): # 预测num_preds步
+        y, state = net(get_input(), state) # 预测y并更新隐状态
+        outputs.append(int(y.argmax(dim=1).reshape(1)))
+    return  ''.join([vocab.idx_to_token[i] for i in outputs])
 
-def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: ResVisualization):  # 训练模型
+def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_iter):
+    """
+    训练模型一个迭代周期\n
+    当使用顺序分区时，只在每个迭代周期的开始位置初始化隐状态。
+    由于下一个小批量数据中的第i个子序列样本与当前第i个子序列样本相邻,
+    因此当前小批量数据最后一个样本的隐状态，将用于初始化下一个小批量数据第一个样本的隐状态。
+    这样，存储在隐状态中的序列的历史信息可以在一个迭代周期内流经相邻的子序列。
+    然而，在任何一点隐状态的计算，都依赖于同一迭代周期中前面所有的小批量数据，这使得梯度计算变得复杂。
+    为了降低计算量，在处理任何一个小批量数据之前，要先分离梯度，使得隐状态的梯度计算总是限制在一个小批量数据的时间步内。
+    当使用随机抽样时,因为每个样本都是在一个随机位置抽样的,因此需要为每个迭代周期重新初始化隐状态。
+    """
+    state, timer = None, Timer()
+    metric = Accumulator(2) # 训练损失之和 与 词元数量
+    with timer:
+        for X,Y in train_iter:
+            if state is None or use_random_iter: # 在第一次迭代或使用随机抽样时初始化state
+                state = net.begin_state(batch_size=X.shape[0], device=device)
+            else:
+                if isinstance(net, nn.Module) and not isinstance(state, tuple): # state对于nn.GRU是个张量
+                    state.detach_()
+                else: # state对于nn.LSTM或从头实现的模型是一个张量
+                    for s in state: s.detach_()
+            y = Y.T.reshape(-1)
+            X, y = X.to(device), y.to(device)
+            y_hat, state = net(X, state)
+            loss = loss_function(y_hat, y.long()).mean() # .long将tensor的类型转化为torch.int64
+            if isinstance(updater, torch.optim.Optimizer):
+                updater.zero_grad()
+                loss.backward()
+                grad_clipping(net, theta=1) # 梯度裁减
+                updater.step()
+            else:
+                loss.backward()
+                grad_clipping(net, theta=1)
+                updater(batch_size=1)
+            metric.add(loss*y.numel(), y.numel())
+    return math.exp(metric[0]/metric[1]), metric[1]/timer.elapsed_time # 返回一次迭代的 困惑度 和 训练速度
+
+def rnn_train(net, train_iter, vocab, lr, num_epochs, device, use_random_iter=False):
+    """训练模型"""
+    loss_function = nn.CrossEntropyLoss()
+    res = ResVisualization(xlist=([]), ylist=([]), legend_names=('train'))
+    if isinstance(net, nn.Module):
+        updater = torch.optim.SGD(net.parameters(), lr)
+    else:
+        updater = lambda batch_size : sgd(net.params, lr, batch_size)
+    predict = lambda prefix : predict_rnn(prefix, 50, net, vocab, device)    
     for epoch in range(num_epochs):
-        train_metrics = std_train_epoch(net, train_set, loss_function, updater)
-        print(
-            f"Epoch:{epoch},训练平均损失:{train_metrics[0] :.4f}, 训练准确度:{train_metrics[1]:.3f}")
-        test_accurancy = std_evaluate_accuracy(net, test_set)
-        Res.res_dict['train_loss'].append(train_metrics[0])
-        Res.res_dict['train_acc'].append(train_metrics[1])
-        Res.res_dict['test_acc'].append(test_accurancy)
-    train_loss, train_accuracy = train_metrics
-    assert train_loss < 0.7, train_loss
-    assert train_accuracy <= 1 and train_accuracy > 0.7, train_accuracy
-    assert test_accurancy <= 1 and test_accurancy > 0.7, test_accurancy
+        perplexity, train_speed = rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_iter)
+        if (epoch+1)%100 == 0:
+            print(f"epoch: {epoch+1}, 对'time traveller'的预测:{predict('time traveller')}")
+            res.add(epoch+1, perplexity, 'train')
+    print(f"困惑度{perplexity:.2f}, {train_speed:.1f}词元/秒 在{str(device)}上")
+    print(predict("time traveller"))
+    print(predict("traveller"))
+    res.plot_res()

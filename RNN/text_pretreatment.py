@@ -2,8 +2,10 @@ import re # Python正则表达式库
 import utils, collections
 
 DATA_HUB = dict() # 存储文件路径及文件对应的SHA-1哈希值
+DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
+
 # 读取数据集
-DATA_HUB['time_machine'] = (utils.DATA_URL + 'timemachine.txt', '090b5e7e70c295757f55df93cb0a180b9691891a')
+DATA_HUB['time_machine'] = (DATA_URL + 'timemachine.txt', '090b5e7e70c295757f55df93cb0a180b9691891a')
 def read_time_machine(): # 将time_machine的内容加载到文本的行的列表(文本的一行是列表的一个元素)中
     with open(utils.download(DATA_HUB, name='time_machine', save_folder_name='time_machine'), 'r') as f:
         lines = f.readlines()
@@ -65,7 +67,7 @@ class Vocabulary:
     def __getitem__(self, tokens):
         if not isinstance(tokens, (list,tuple)): # 如果不是列表或元组,则直接以单个键的方式返回一个token的索引
             return self.token_to_idx.get(tokens, self.unk)
-        return [self.__getitem__(token) for token in tokens] # 以多个键方式返回若干个tokend的索引列表
+        return [self.__getitem__(token) for token in tokens] # 以多个键方式返回若干个token的索引列表
     
     @property
     def num_tokens(self):
