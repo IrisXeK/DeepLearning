@@ -18,7 +18,7 @@ class Accumulator:  # 累加多个变量的实用程序类
         return self.data[idx]
 
 class ResVisualization:
-    def __init__(self, xlist:tuple, ylist:tuple, legend_names, is_grid=None,
+    def __init__(self, xlist:tuple|list, ylist:tuple|list, legend_names:str|list, is_grid=None,
                 xlabel:str=None, ylabel:str=None, title:str=None,
                 xlim:list=None, ylim:list=None, line_style:str='-') -> None:
         """
@@ -142,6 +142,36 @@ def download_all(DATA_HUB):
     for name in DATA_HUB:
         download(name)
 
+def try_gpu(i=0):
+    """如果存在,返回gpu(i), 否则返回cpu()"""
+    if torch.cuda.device_count() >= i+1:
+        return torch.device(f'cuda:{i}')
+    return torch.device('cpu')
+
+def sgd(params:list, lr, batch_size):
+    """
+    小批量梯度下降优化函数\n
+    参数:\n
+    params : 模型的所有可学习的参数的列表\n
+    lr : 学习率\n
+    batch_size : 批量大小\n
+    """
+    with torch.no_grad():
+        for param in params:
+            param -= lr * param.grad / batch_size # 更新参数
+            param.grad.zero_() # 清除累积的梯度
+
+def grad_clipping(net, theta):
+    """裁剪梯度"""
+    if isinstance(net, nn.Module):
+        params = [p for p in net.parameters() if p.requires_grad]
+    else:
+        params = net.params
+    norm = torch.sqrt(sum(torch.sum((p.grad ** 2)) for p in params))
+    if norm > theta:
+        for param in params:
+            param.grad[:] *= theta / norm
+
 class SeqDataLoader:
     """
     加载序列数据的迭代器
@@ -159,10 +189,14 @@ class SeqDataLoader:
     
     def get_random_batch_seq(self, corpus, batch_size, num_steps):
         """
-        使用随机抽样生成一个小批量序列\n
+        使用随机抽样生成一个样本批量\n
+        参数:\n
         corpus : 语料库
         batch_size : 一个小批量中有多少个子序列样本
-        num_steps : 每个序列预定义的时间步数
+        num_steps : 每个序列预定义的时间步\n
+        返回:\n
+        X : 特征, shape=(batch_size, num_steps)
+        Y : 标签, shape=(batch_size, num_steps)
         """
         def get_seq(pos):
             """
@@ -172,33 +206,37 @@ class SeqDataLoader:
             return corpus[pos: pos + num_steps]
 
         corpus = corpus[random.randint(0, num_steps - 1):] # 随机选择起始分区的偏移量,随机范围包括num_steps-1  减去1是因为需要考虑标签
-        num_subseqs = (len(corpus) - 1) // num_steps # 整个批量中子序列的数量
+        num_subseqs = (len(corpus) - 1) // num_steps # 整个语料库可划分出的子序列的数量
         initial_indices = list(range(0, num_subseqs * num_steps, num_steps)) # 长度为num_step的每个子序列的起始索引
         random.shuffle(initial_indices) #  在随机抽样的迭代过程中,来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
-        num_batches = num_subseqs // batch_size # 整个批量可被分成的小批量的数量
+        num_batches = num_subseqs // batch_size # 所有子序列可被分成的小批量的数量 即以batch_size个样本为一批,可分出多少批
         for i in range(0, batch_size * num_batches, batch_size): # 迭代小批量
-            initial_indices_per_batch = initial_indices[i : i+batch_size] # 在这里，initial_indices包含子序列的随机起始索引
-            X = [get_seq(j) for j in initial_indices_per_batch]
-            Y = [get_seq(j+1) for j in initial_indices_per_batch]
+            initial_indices_per_batch = initial_indices[i : i+batch_size] # 得到一批中所有样本的起始索引
+            X = [get_seq(j) for j in initial_indices_per_batch] # 根据起始索引依次获得一批中的样本 X.shape=(batch_size, num_steps)
+            Y = [get_seq(j+1) for j in initial_indices_per_batch] # 根据起始索引依次获得一批中的样本的标签
             yield torch.tensor(X), torch.tensor(Y) # 特征 和 对应的标签
 
     def get_sequential_batch_seq(self, corpus, batch_size, num_steps):
         """
-        使用顺序分区生成一个小批量子序列\n
+        使用顺序分区生成一个样本批量\n
+        参数:\n
         corpus : 语料库
         batch_size : 一个小批量中有多少个子序列样本
-        num_steps : 每个序列预定义的时间步数
+        num_steps : 每个序列预定义的时间步数\n
+        返回:\n
+        X : 特征, shape=(batch_size, num_steps)
+        Y : 标签, shape=(batch_size, num_steps)
         """
-        offset = random.randint(0,num_steps-1) # 用随机偏移量划分序列
-        num_tokens = ((len(corpus)-offset-1) // batch_size) * batch_size # token数
+        offset = random.randint(0, num_steps-1) # 用随机偏移量划分序列
+        num_tokens = ((len(corpus)-offset-1) // batch_size) * batch_size # 得到正好的token数, 将不能完整组成一批的token舍弃
         Xs = torch.tensor(corpus[offset : offset + num_tokens])
         Ys = torch.tensor(corpus[offset+1 : offset + num_tokens + 1])
         Xs, Ys = Xs.reshape(batch_size, -1), Ys.reshape(batch_size, -1)
-        num_batches = Xs.shape[1] // num_steps # 小批量的个数
+        num_batches = Xs.shape[1] // num_steps # 小批量的个数(纵向分割出一个个batch)
         for i in range(0, num_batches*num_steps, num_steps):
             X = Xs[: ,i:i + num_steps] # 特征
             Y = Ys[: ,i:i + num_steps] # 标签
-            yield X, Y
+            yield X, Y # shape=(batch_size, num_steps)
     
 def load_time_machine_data(batch_size, num_steps, 
                            max_tokens=10000, use_random_iter=False):
@@ -207,49 +245,6 @@ def load_time_machine_data(batch_size, num_steps,
     """
     data_iter = SeqDataLoader(batch_size, num_steps, max_tokens, use_random_iter)
     return data_iter, data_iter.vocab
-
-def try_gpu(i=0):
-    """如果存在,返回gpu(i), 否则返回cpu()"""
-    if torch.cuda.device_count() >= i+1:
-        return torch.device(f'cuda:{i}')
-    return torch.device('cpu')
-
-def std_accuracy(y_hat, y):  # 计算预测正确的数量
-    """
-    如果y_hat存储的是矩阵,假定第二个维度存储每个类的预测分数
-    """
-    if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
-        y_hat = y_hat.argmax(axis=1)  # 取出y_hat中每一行中的最大的那个概率的索引
-    # 比较y_hat和y中的每个位置相不相等, 注意这之前要先把它们的类型转换为一样的 .type(dtype)函数表示将这个tensor的类型转为dtype
-    cmp = y_hat.type(y.dtype) == y
-    return float(cmp.type(y.dtype).sum())
-
-def sgd(params:list, lr, batch_size):
-    """小批量剃度下降优化函数"""
-    with torch.no_grad():
-        for param in params:
-            param -= lr * param.grad / batch_size # 更新参数
-            param.grad.zero_() # 清除累积的梯度
-
-def std_evaluate_accuracy(net, data_iter):  # 对于任何data_iter可访问的数据集 都可以评估模型的精度
-    if isinstance(net, nn.Module):
-        net.eval()  # 模型设置为评估模式
-    metric = Accumulator(2)  # 2个位置为 正确预测数和预测总数
-    with torch.no_grad():
-        for X, y in data_iter:
-            metric.add(std_accuracy(net(X), y), y.numel())
-    return metric[0] / metric[1]
-
-def grad_clipping(net, theta):
-    """裁剪梯度"""
-    if isinstance(net, nn.Module):
-        params = [p for p in net.parameters() if p.requires_grad]
-    else:
-        params = net.params
-    norm = torch.sqrt(sum(torch.sum((p.grad ** 2)) for p in params))
-    if norm > theta:
-        for param in params:
-            param.grad[:] *= theta / norm
 
 def predict_rnn(prefix, num_preds, net, vocab, device):
     """
@@ -266,20 +261,20 @@ def predict_rnn(prefix, num_preds, net, vocab, device):
         _, state = net(get_input(), state) # 更新隐状态
         outputs.append(vocab[y])
     for _ in range(num_preds): # 预测num_preds步
-        y, state = net(get_input(), state) # 预测y并更新隐状态
-        outputs.append(int(y.argmax(dim=1).reshape(1)))
+        y, state = net(get_input(), state) # 预测y并更新隐状态 相当于(batch_size, num_step)=(1,1)的单步预测
+        outputs.append(int(y.argmax(dim=1).reshape(1))) # argmax输出的是列表 所以需要reshape
     return  ''.join([vocab.idx_to_token[i] for i in outputs])
 
 def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_iter):
     """
-    训练模型一个迭代周期\n
+    训练模型的一个迭代周期\n
     当使用顺序分区时，只在每个迭代周期的开始位置初始化隐状态。
     由于下一个小批量数据中的第i个子序列样本与当前第i个子序列样本相邻,
     因此当前小批量数据最后一个样本的隐状态，将用于初始化下一个小批量数据第一个样本的隐状态。
     这样，存储在隐状态中的序列的历史信息可以在一个迭代周期内流经相邻的子序列。
     然而，在任何一点隐状态的计算，都依赖于同一迭代周期中前面所有的小批量数据，这使得梯度计算变得复杂。
     为了降低计算量，在处理任何一个小批量数据之前，要先分离梯度，使得隐状态的梯度计算总是限制在一个小批量数据的时间步内。
-    当使用随机抽样时,因为每个样本都是在一个随机位置抽样的,因此需要为每个迭代周期重新初始化隐状态。
+    (当使用随机抽样时,因为每个样本都是在一个随机位置抽样的,因此需要为每个迭代周期重新初始化隐状态。)
     """
     state, timer = None, Timer()
     metric = Accumulator(2) # 训练损失之和 与 词元数量
@@ -287,14 +282,14 @@ def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_
         for X,Y in train_iter:
             if state is None or use_random_iter: # 在第一次迭代或使用随机抽样时初始化state
                 state = net.begin_state(batch_size=X.shape[0], device=device)
-            else:
+            else: # 剥离梯度
                 if isinstance(net, nn.Module) and not isinstance(state, tuple): # state对于nn.GRU是个张量
                     state.detach_()
                 else: # state对于nn.LSTM或从头实现的模型是一个张量
                     for s in state: s.detach_()
-            y = Y.T.reshape(-1)
+            y = Y.T.reshape(-1) # 展平为len=num_steps*batch_size的向量,以便nn.CrossEntropyLoss处理
             X, y = X.to(device), y.to(device)
-            y_hat, state = net(X, state)
+            y_hat, state = net(X, state) # y_hat.shape=(num_steps*batch_size, vocab_size)
             loss = loss_function(y_hat, y.long()).mean() # .long将tensor的类型转化为torch.int64
             if isinstance(updater, torch.optim.Optimizer):
                 updater.zero_grad()
@@ -311,7 +306,8 @@ def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_
 def rnn_train(net, train_iter, vocab, lr, num_epochs, device, use_random_iter=False):
     """训练模型"""
     loss_function = nn.CrossEntropyLoss()
-    res = ResVisualization(xlist=([]), ylist=([]), legend_names=('train'))
+    res = ResVisualization(xlist=[], ylist=[], legend_names=('train'),
+                           xlabel='epoch', ylabel='perplexity', title='train_res')
     if isinstance(net, nn.Module):
         updater = torch.optim.SGD(net.parameters(), lr)
     else:
@@ -319,10 +315,10 @@ def rnn_train(net, train_iter, vocab, lr, num_epochs, device, use_random_iter=Fa
     predict = lambda prefix : predict_rnn(prefix, 50, net, vocab, device)    
     for epoch in range(num_epochs):
         perplexity, train_speed = rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_iter)
-        if (epoch+1)%100 == 0:
-            print(f"epoch: {epoch+1}, 对'time traveller'的预测:{predict('time traveller')}")
-            res.add(epoch+1, perplexity, 'train')
+        if (epoch+1) % 100 == 0:
+            print(f"epoch: {epoch+1}, 对'time traveller'的预测:{predict(prefix='time traveller')}")
+        res.add(epoch+1, perplexity, 'train')
     print(f"困惑度{perplexity:.2f}, {train_speed:.1f}词元/秒 在{str(device)}上")
-    print(predict("time traveller"))
-    print(predict("traveller"))
+    print(f"对prefix为'time traveller'的预测:{predict(prefix='time traveller')}")
+    print(f"对prefix为'traveller'的预测:{predict(prefix='traveller')}")
     res.plot_res()

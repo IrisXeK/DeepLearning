@@ -69,14 +69,14 @@ class Vocabulary:
             return self.token_to_idx.get(tokens, self.unk)
         return [self.__getitem__(token) for token in tokens] # 以多个键方式返回若干个token的索引列表
     
-    @property
-    def num_tokens(self):
-        return len(self)
-    
     def to_tokens(self, indices):
         if not isinstance(indices, (list, tuple)):
             return self.idx_to_token[indices]
         return [self.idx_to_token[index] for index in indices]
+    
+    @property
+    def num_tokens(self):
+        return len(self)
     
     @property
     def unk(self):
@@ -87,11 +87,17 @@ class Vocabulary:
         return self._token_freqs
 
 def load_time_machine_corpus(max_tokens=-1):
+    """
+    参数:\n
+    max_tokens:如果大于0,则只取前max_tokens个单词,否则不限制\n
+    返回:\n
+    时间机器数据集的语料库(数据集中的字符(按顺序)在vocab中对应的索引列表) 和 词表vocab
+    """
     lines = read_time_machine()
     tokens = tokenize(lines, token='char') #  为简化后面的训练,使用字符实现文本词元化
     vocab = Vocabulary(tokens) # 使用time_machine数据集作为语料库构建词表
     # 因为《时光机器》数据集中的每个文本行不一定是一个句子或一个段落，所以将所有文本行展平到一个列表中
-    corpus = [vocab[token] for line in tokens for token in line]
+    corpus = [vocab[token] for line in tokens for token in line] # 语料库:数据集中的字符(按顺序)在vocab中对应的索引列表
     if max_tokens > 0:
         corpus = corpus[:max_tokens] # 截断为前max_tokens个词元
     return corpus, vocab
