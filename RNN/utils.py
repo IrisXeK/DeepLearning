@@ -1,15 +1,8 @@
-import os
-import hashlib
-import requests
-import zipfile
-import tarfile
-import torch
-import random
-import text_pretreatment
-import time
-import math
+import os, hashlib, requests, zipfile, tarfile, torch, random, time, math
 import matplotlib.pyplot as plt
+import text_pretreatment
 from torch import nn
+from torch.nn import functional as F
 
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
@@ -115,9 +108,77 @@ class Timer:
         # print(f"Elapsed time: {self.get_elapsed_time():.4f} seconds")
 
 
-# save_folder_name指定存储在当前目录下的data/save_folder_name下
+class RNNScratch():
+    def __init__(self, vocab_size, num_hiddens, init_params_fn, forward_fn, init_state_fn, device) -> None:
+        self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+        self.params = init_params_fn(vocab_size, num_hiddens, device)
+        self.forward_fn, self.init_state_fn = forward_fn, init_state_fn
+
+    def begin_state(self, batch_size, device):
+        return self.init_state_fn(batch_size, self.num_hiddens, device)
+
+    def __call__(self, X, state):
+        """
+        参数:\n
+        X : 形状为(批量大小, 时间步数量)\n
+        state : 前一个时间步的隐状态，张量变量，形状为(批量大小,隐藏单元数)
+        """
+        X = F.one_hot(X.T, self.vocab_size).type(torch.float32)
+        return self.forward_fn(X, state, self.params)
+
+class RNN(nn.Module):
+    def __init__(self, rnn_layer, vocab_size):
+        super().__init__()
+        self.rnn_layer = rnn_layer # rnn_layer的"输出"(H)不涉及输出层的计算：它是指每个时间步的隐状态，这些隐状态可以用作后续输出层的输入
+        self.vocab_size = vocab_size
+        self.num_hiddens = self.rnn_layer.hidden_size
+        if not self.rnn_layer.bidirectional: # 如果RNN不是双向的,num_directions应该是1
+            self.num_directions = 1
+            self.linear = nn.Linear(self.num_hiddens, self.vocab_size)
+        else: # 如果RNN是双向的,num_directions应该是2
+            self.num_directions = 2
+            self.linear = nn.Linear(self.num_hiddens * 2, self.vocab_size)
+
+    def forward(self, inputs, state):
+        """
+        参数:\n
+        inputs: 批量矩阵X转置后的独热编码,形状为(时间步数量, 批量大小, 词表大小), 每一行是批量矩阵中各个样本在某一时间步的特征\n
+        state: 上一时间步的隐状态，张量变量，形状为(批量大小,隐藏单元数)
+        返回:\n
+        形状为(num_steps*batch_size, num_outputs)的预测序列 和 隐状态
+        """
+        X = F.one_hot(inputs.T.long(), self.vocab_size).to(torch.float32) # 将输入转成one-hot向量表示 shape=(num_steps, batch_size, vocab_size)
+        H, state = self.rnn_layer(X, state) # H.shape=(num_steps, batch_size, num_hiddens)
+        output = self.linear(H.reshape((-1, H.shape[-1]))) # 全连接层首先将H的形状改为(时间步数*批量大小,隐藏单元数),它的输出形状是(时间步数*批量大小,词表大小)。
+        return output, state
+    
+    def begin_state(self, device, batch_size=1):
+        """
+        返回隐藏层的初始状态\n
+        参数:\n
+        batch_size : 批量大小\n
+        返回:\n
+        若隐藏层是nn.GRU,返回形状为(num_layers * num_directions, batch_size, hidden_size)的全0张量隐状态\n
+        若隐藏层是nn.LSTM,返回形状为(2, num_layers * num_directions, batch_size, hidden_size)的全0张量隐状态
+        """
+        if not isinstance(self.rnn_layer, nn.LSTM): # nn.GRU以张量作为隐状态
+            return torch.zeros(size=(self.num_directions * self.rnn_layer.num_layers, batch_size, self.num_hiddens),
+                                device=device)
+        else: # nn.LSTM以元组作为隐状态
+            return (torch.zeros(size=(self.num_directions * self.rnn_layer.num_layers, batch_size, self.num_hiddens),
+                                device=device),
+                    torch.zeros(size=(self.num_directions * self.rnn_layer.num_layers, batch_size, self.num_hiddens),
+                                device=device))
+
+
+
+
 def download(DATA_HUB, name, save_folder_name: str):
-    """下载一个DATA_HUB中的文件并返回本地文件名"""
+    """
+    下载一个DATA_HUB中的name文件并返回本地文件名\n
+    参数:\n
+        save_folder_name指定存储在当前目录下的data/save_folder_name下
+    """
     assert name in DATA_HUB, f"{name} 不存在于 {DATA_HUB}"
     cache_dir = os.path.join('data', save_folder_name)
     url, sha1_hash = DATA_HUB[name]
@@ -139,7 +200,6 @@ def download(DATA_HUB, name, save_folder_name: str):
         f.write(r.content)
     return fname
 
-
 def download_extract(name, folder=None):
     """下载并解压zip/tar文件"""
     fname = download(name)
@@ -155,19 +215,16 @@ def download_extract(name, folder=None):
     fp.extractall(base_dir)  # 将压缩的文件解压到base_dir路径下
     return os.path.join(base_dir, folder) if folder else data_dir
 
-
 def download_all(DATA_HUB):
     """下载DATA_HUB中的所有文件"""
     for name in DATA_HUB:
         download(name)
-
 
 def try_gpu(i=0):
     """如果存在,返回gpu(i), 否则返回cpu()"""
     if torch.cuda.device_count() >= i+1:
         return torch.device(f'cuda:{i}')
     return torch.device('cpu')
-
 
 def sgd(params: list, lr, batch_size):
     """
@@ -181,7 +238,6 @@ def sgd(params: list, lr, batch_size):
         for param in params:
             param -= lr * param.grad / batch_size  # 更新参数
             param.grad.zero_()  # 清除累积的梯度
-
 
 def grad_clipping(net, theta):
     """
@@ -203,7 +259,6 @@ def grad_clipping(net, theta):
     if norm > theta:
         for param in params:
             param.grad[:] *= theta / norm
-
 
 class SeqDataLoader:
     """
@@ -281,7 +336,6 @@ class SeqDataLoader:
             Y = Ys[:, i:i + num_steps]  # 标签
             yield X, Y  # shape=(batch_size, num_steps)
 
-
 def load_time_machine_data(batch_size, num_steps,
                            max_tokens=10000, use_random_iter=False):
     """
@@ -290,7 +344,6 @@ def load_time_machine_data(batch_size, num_steps,
     data_iter = SeqDataLoader(batch_size, num_steps,
                               max_tokens, use_random_iter)
     return data_iter, data_iter.vocab
-
 
 def predict_rnn(prefix, num_preds, net, vocab, device):
     """
@@ -313,7 +366,6 @@ def predict_rnn(prefix, num_preds, net, vocab, device):
         # argmax输出的是列表 所以需要reshape
         outputs.append(int(y.argmax(dim=1).reshape(1)))
     return ''.join([vocab.idx_to_token[i] for i in outputs])
-
 
 def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_iter):
     """
@@ -357,7 +409,6 @@ def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_
             metric.add(loss*y.numel(), y.numel())
     # 返回一次迭代的 困惑度 和 训练速度
     return math.exp(metric[0]/metric[1]), metric[1]/timer.elapsed_time
-
 
 def rnn_train(net, train_iter, vocab, lr, num_epochs, device, use_random_iter=False):
     """训练模型"""
