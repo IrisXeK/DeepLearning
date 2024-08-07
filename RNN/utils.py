@@ -6,7 +6,6 @@ from torch.nn import functional as F
 
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
-
 class Accumulator:  # 累加多个变量的实用程序类
     def __init__(self, n):
         self.data = [0.0]*n
@@ -19,7 +18,6 @@ class Accumulator:  # 累加多个变量的实用程序类
 
     def __getitem__(self, idx):
         return self.data[idx]
-
 
 class ResVisualization:
     def __init__(self, xlist: tuple | list, ylist: tuple | list, legend_names: str | list, is_grid=None,
@@ -74,7 +72,6 @@ class ResVisualization:
         plt.legend()
         plt.show()
 
-
 class Timer:
     def __init__(self):
         self.start_time = None
@@ -89,14 +86,14 @@ class Timer:
 
     def stop(self):
         if self.start_time is None:
-            raise ValueError("Timer has not been started.")
+            raise ValueError("计时器还没有开始计时")
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
         self.elapsed_time_sum += self.elapsed_time
 
     def get_elapsed_time(self):
         if self.elapsed_time is None:
-            raise ValueError("Timer has not been stopped yet.")
+            raise ValueError("计时器未被停止计时")
         return self.elapsed_time
 
     def __enter__(self):
@@ -106,7 +103,6 @@ class Timer:
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop()
         # print(f"Elapsed time: {self.get_elapsed_time():.4f} seconds")
-
 
 class RNNScratch():
     def __init__(self, vocab_size, num_hiddens, init_params_fn, forward_fn, init_state_fn, device) -> None:
@@ -170,9 +166,6 @@ class RNN(nn.Module):
                     torch.zeros(size=(self.num_directions * self.rnn_layer.num_layers, batch_size, self.num_hiddens),
                                 device=device))
 
-
-
-
 def download(DATA_HUB, name, save_folder_name: str):
     """
     下载一个DATA_HUB中的name文件并返回本地文件名\n
@@ -200,20 +193,19 @@ def download(DATA_HUB, name, save_folder_name: str):
         f.write(r.content)
     return fname
 
-def download_extract(name, folder=None):
+def download_extract(DATA_HUB, name, save_folder_name):
     """下载并解压zip/tar文件"""
-    fname = download(name)
-    base_dir = os.path.dirname(fname)  # dirname(name)查询name文件所在的文件夹的路径
-    # splitext 将文件名与文件后缀(如.zip)分割为具有两元素的元组
-    data_dir, ext = os.path.splitext(fname)
+    compressed_file = download(DATA_HUB, name, save_folder_name) # 下载压缩包
+    base_dir = os.path.dirname(compressed_file)  # basedir为压缩包所在相对路径 dirname()获取文件的路径
+    data_dir, ext = os.path.splitext(compressed_file) # splitext()将文件名与文件后缀(如.zip)分割为具有两元素的元组
     if ext == '.zip':
-        fp = zipfile.ZipFile(fname, 'r')
+        fp = zipfile.ZipFile(compressed_file, 'r')
     elif ext in ('.tar', '.gz'):
-        fp = tarfile.open(fname, 'r')
+        fp = tarfile.open(compressed_file, 'r')
     else:
-        assert False, '只有zip/tar文件可以被解压缩'
+        raise ValueError('只有zip/tar文件可以被解压缩')
     fp.extractall(base_dir)  # 将压缩的文件解压到base_dir路径下
-    return os.path.join(base_dir, folder) if folder else data_dir
+    return data_dir
 
 def download_all(DATA_HUB):
     """下载DATA_HUB中的所有文件"""
@@ -390,13 +382,10 @@ def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_
                 else:  # state对于nn.LSTM或从头实现的模型是一个张量
                     for s in state:
                         s.detach_()
-            # 展平为len=num_steps*batch_size的向量,以便nn.CrossEntropyLoss处理
-            y = Y.T.reshape(-1)
+            y = Y.T.reshape(-1) # 展平为len=num_steps*batch_size的向量,以便nn.CrossEntropyLoss处理
             X, y = X.to(device), y.to(device)
-            # y_hat.shape=(num_steps*batch_size, vocab_size)
-            y_hat, state = net(X, state)
-            # .long将tensor的类型转化为torch.int64
-            loss = loss_function(y_hat, y.long()).mean()
+            y_hat, state = net(X, state) # y_hat.shape=(num_steps*batch_size, vocab_size)
+            loss = loss_function(y_hat, y.long()).mean() # .long将tensor的类型转化为torch.int64
             if isinstance(updater, torch.optim.Optimizer):
                 updater.zero_grad()
                 loss.backward()
@@ -407,8 +396,8 @@ def rnn_train_epoch(net, train_iter, loss_function, updater, device, use_random_
                 grad_clipping(net, theta=1)
                 updater(batch_size=1)
             metric.add(loss*y.numel(), y.numel())
-    # 返回一次迭代的 困惑度 和 训练速度
-    return math.exp(metric[0]/metric[1]), metric[1]/timer.elapsed_time
+    
+    return math.exp(metric[0]/metric[1]), metric[1]/timer.elapsed_time # 返回一次迭代的 困惑度 和 训练速度
 
 def rnn_train(net, train_iter, vocab, lr, num_epochs, device, use_random_iter=False):
     """训练模型"""
