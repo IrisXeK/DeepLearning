@@ -1,8 +1,9 @@
-import os, hashlib, requests, zipfile, tarfile, torch, random, time, math
+import os, hashlib, requests, zipfile, tarfile, torch, random, time, math, collections
 import matplotlib.pyplot as plt
 import text_pretreatment
 from torch import nn
 from torch.nn import functional as F
+from torch.utils import data
 
 DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
 
@@ -165,6 +166,95 @@ class RNN(nn.Module):
                                 device=device),
                     torch.zeros(size=(self.num_directions * self.rnn_layer.num_layers, batch_size, self.num_hiddens),
                                 device=device))
+        
+class Vocabulary:
+    def __init__(self, tokens=None, min_freq=0, reserved_tokens=None) -> None:
+        """"
+        tokens : 词元列表
+        min_freq : 最小的词元出现次数
+        reserved_tokens : 保留的词元列表
+        """
+        if tokens is None:
+            tokens = []
+        if reserved_tokens is None:
+            reserved_tokens = []
+        counter = self.count_corpus(tokens)
+        self._token_freqs = sorted(counter.items(), key=lambda x:x[1], reverse=True) # 按出现频率降序排序
+        self.idx_to_token = ['<unk>'] + reserved_tokens # 未知的词元索引为0
+        self.token_to_idx = {token:idx for idx, token in enumerate(self.idx_to_token)}  # 单词到索引的映射
+        for token, freq in self._token_freqs: # 根据min_freq规则,过滤部分tokens中的词 剩下的添加到单词表
+            if freq < min_freq:
+                break
+            if token not in self.token_to_idx: # 如果当前单词不在保留单词中,则添加到单词表中
+                self.idx_to_token.append(token)
+                self.token_to_idx[token] = len(self.idx_to_token) - 1
+
+    def count_corpus(self, tokens):
+        """
+        统计词元的出现频率
+        tokens : 1D或2D列表
+        """
+        if len(tokens) == 0 or isinstance(tokens[0], list): # 若是空列表或二维列表,则展平为一维列表
+            # 将二维列表展平成一个一维列表
+            tokens = [token for line in tokens for token in line]
+        return collections.Counter(tokens)
+
+    def __len__(self):
+        return len(self.idx_to_token)
+    
+    def __getitem__(self, tokens):
+        if not isinstance(tokens, (list,tuple)): # 如果不是列表或元组,则直接以单个键的方式返回一个token的索引
+            return self.token_to_idx.get(tokens, self.unk)
+        return [self.__getitem__(token) for token in tokens] # 以多个键方式返回若干个token的索引列表
+    
+    def to_tokens(self, indices):
+        if not isinstance(indices, (list, tuple)):
+            return self.idx_to_token[indices]
+        return [self.idx_to_token[index] for index in indices]
+    
+    @property
+    def num_tokens(self):
+        return len(self)
+    
+    @property
+    def unk(self):
+        return 0 # 未知的单词索引为0
+    
+    @property
+    def token_freqs(self):
+        return self._token_freqs
+
+class Encoder(nn.Module):
+    """编码器:接受一个长度可变的序列作为输入，并将其转换为具有固定形状的编码状态。"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def forward(self, X, *args):
+        raise NotImplementedError
+    
+class Decoder(nn.Module):
+    """解码器:它将固定形状的编码状态映射到长度可变的序列。"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def init_state(self, encoder_outputs, *args):
+        """用于将编码器的输出转换为编码后的状态。注意，此步骤可能需要额外的输入"""
+        raise NotImplementedError
+    
+    def forward(self, X, state):
+        raise NotImplementedError
+    
+class EncodeDecoder(nn.Module):
+    """编码器-解码器架构的基类"""
+    def __init__(self, encoder, decoder, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.encoder = encoder
+        self._decoder = decoder
+
+    def forward(self, encoder_inputs, decoder_inputs, *args):
+        encoder_outputs = self.encoder(encoder_inputs)
+        decoder_state = self._decoder.init_state(encoder_outputs, *args)
+        return self.decoder(decoder_inputs, decoder_state)
 
 def download(DATA_HUB, name, save_folder_name: str):
     """
@@ -211,6 +301,11 @@ def download_all(DATA_HUB):
     """下载DATA_HUB中的所有文件"""
     for name in DATA_HUB:
         download(name)
+
+def load_array(data_arrays, batch_size, is_train=True):
+    """以数组的形式加载数据集"""
+    dataset = data.TensorDataset(*data_arrays)
+    return data.DataLoader(dataset, batch_size, shuffle=is_train)
 
 def try_gpu(i=0):
     """如果存在,返回gpu(i), 否则返回cpu()"""
