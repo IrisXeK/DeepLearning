@@ -301,7 +301,13 @@ def download_all(DATA_HUB):
         download(name)
 
 def load_array(data_arrays, batch_size, is_train=True):
-    """以数组的形式加载数据集"""
+    """
+    将data_arrays中的array打包成TensorDataset后加载到DataLoader中\n
+    参数:\n
+        data_arrays : tuple(tuple)\n 每一个array的第一维长度必须一致
+    返回:\n
+        一个DataLoader类的data_iter
+    """
     dataset = data.TensorDataset(*data_arrays)
     return data.DataLoader(dataset, batch_size, shuffle=is_train)
 

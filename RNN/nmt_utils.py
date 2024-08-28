@@ -87,7 +87,7 @@ def load_data_nmt(batch_size, num_steps, num_examples=600):
         lines = [line + [vocab['<eos>']] for line in lines] # 在每条文本序列后添加一个特殊的<eos>词元表明序列结束
         array = torch.tensor([truncate_pad(line, num_steps, vocab['<pad>']) for line in lines]) # 填充或截断后的词元索引
         valid_len = (array!=vocab['pad']).type(torch.int32).sum(axis=1) # 一个列表, 表示每条文本序列中有效单词数
-        return  array, valid_len
+        return array, valid_len
 
     def show_list_len_pair_histogram(data_lists, legends, xlabel, ylabel):
         """绘制一个直方图,显示target和source中的序列中的词元数量"""
