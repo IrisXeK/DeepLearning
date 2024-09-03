@@ -38,11 +38,13 @@ class Timer:
         self.stop()
         # print(f"Elapsed time: {self.get_elapsed_time():.4f} seconds")
 
-class Accumulator:  # 累加多个变量的实用程序类
+class Accumulator:
+    """累加多个变量的实用程序类"""
     def __init__(self, n):
         self.data = [0.0]*n
 
-    def add(self, *args):  # 在data的对应位置加上对应的数
+    def add(self, *args):
+        """在data的对应位置加上对应的数"""
         self.data = [a + float(b) for a, b in zip(self.data, args)]
 
     def reset(self):
@@ -65,7 +67,6 @@ class ResVisualization:
         plt.legend()
         plt.show()
 
-
 def try_gpu(i=0):
     """如果存在,返回gpu(i), 否则返回cpu()"""
     if torch.cuda.device_count() >= i+1:
@@ -77,7 +78,7 @@ def try_all_gpus():
     devices = [torch.device(f'cuda:{i}') for i in range(torch.cuda.device_count())]
     return devices if devices else [torch.device('cpu')]
 
-def std_get_MINST_labels(labels):
+def get_MINST_labels(labels):
     """获取训练集中的数据对应的标签 labels参数传入 MINST_train.train_labels"""
     text_labels = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat',
                    'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
@@ -97,7 +98,7 @@ def load_MINST_data(batch_size, num_workers=16, resize:tuple=None):
                                                             download=True),
                             num_workers=16, batch_size=batch_size, shuffle=False))
 
-def std_accuracy(y_hat, y):  # 计算预测正确的数量
+def accuracy(y_hat, y):  # 计算预测正确的数量
     """
     如果y_hat存储的是矩阵,假定第二个维度存储每个类的预测分数
     """
@@ -107,16 +108,16 @@ def std_accuracy(y_hat, y):  # 计算预测正确的数量
     cmp = y_hat.type(y.dtype) == y
     return float(cmp.type(y.dtype).sum())
 
-def std_evaluate_accuracy(net, data_iter):  # 对于任何data_iter可访问的数据集 都可以评估模型的精度
+def evaluate_accuracy(net, data_iter):  # 对于任何data_iter可访问的数据集 都可以评估模型的精度
     if isinstance(net, nn.Module):
         net.eval()  # 模型设置为评估模式
     metric = Accumulator(2)  # 2个位置为 正确预测数和预测总数
     with torch.no_grad():
         for X, y in data_iter:
-            metric.add(std_accuracy(net(X), y), y.numel())
+            metric.add(accuracy(net(X), y), y.numel())
     return metric[0] / metric[1]
 
-def std_evaluate_accuracy_gpu(net, data_iter, device=None):  # 使用GPU计算模型在数据集上的精度
+def evaluate_accuracy_gpu(net, data_iter, device=None):  # 使用GPU计算模型在数据集上的精度
     if isinstance(net, nn.Module):
         net.eval()  # 模型设置为评估模式
         if not device:
@@ -129,7 +130,7 @@ def std_evaluate_accuracy_gpu(net, data_iter, device=None):  # 使用GPU计算�
             else:
                 X = X.to(device)
             y = y.to(device)
-            metric.add(std_accuracy(net(X), y), y.numel())
+            metric.add(accuracy(net(X), y), y.numel())
     return metric[0] / metric[1]
 
 def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res: ResVisualization):  # 使用GPU训练模型
@@ -142,7 +143,6 @@ def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res
     optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
     loss_function = nn.CrossEntropyLoss()
     timer = Timer()
-    num_batchs = len(train_iter)
     for epoch in range(num_epochs):
         metric = Accumulator(3)  # 训练损失之和，训练准确率之和，样本数
         net.train()
@@ -155,10 +155,10 @@ def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res
                 loss.backward()
                 optimizer.step()
                 with torch.no_grad():
-                    metric.add(loss * X.shape[0], std_accuracy(y_hat, y), X.shape[0])
+                    metric.add(loss * X.shape[0], accuracy(y_hat, y), X.shape[0])
         train_loss = metric[0] / metric[2]
         train_acc = metric[1] / metric[2]
-        test_acc = std_evaluate_accuracy_gpu(net, test_iter)
+        test_acc = evaluate_accuracy_gpu(net, test_iter)
         Res.res_dict['train_loss'].append(train_loss)
         Res.res_dict['train_acc'].append(train_acc)
         Res.res_dict['test_acc'].append(test_acc)
@@ -168,10 +168,10 @@ def train_gpu(net, train_iter, test_iter, num_epochs, learning_rate, device, Res
     
 def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: ResVisualization):  # 训练模型
     for epoch in range(num_epochs):
-        train_metrics = std_train_epoch(net, train_set, loss_function, updater)
+        train_metrics = train_epoch(net, train_set, loss_function, updater)
         print(
             f"Epoch:{epoch},训练平均损失:{train_metrics[0] :.4f}, 训练准确度:{train_metrics[1]:.3f}")
-        test_accurancy = std_evaluate_accuracy(net, test_set)
+        test_accurancy = evaluate_accuracy(net, test_set)
         Res.res_dict['train_loss'].append(train_metrics[0])
         Res.res_dict['train_acc'].append(train_metrics[1])
         Res.res_dict['test_acc'].append(test_accurancy)
@@ -180,7 +180,7 @@ def train(net, train_set, test_set, loss_function, num_epochs, updater, Res: Res
     assert train_accuracy <= 1 and train_accuracy > 0.7, train_accuracy
     assert test_accurancy <= 1 and test_accurancy > 0.7, test_accurancy
 
-def std_train_epoch(net, train_set, loss_function, updater):  # 模型在训练周期中的一次训练
+def train_epoch(net, train_set, loss_function, updater):  # 模型在训练周期中的一次训练
     """
     updater是更新模型参数的函数,接收批量大小作为参数
     updater可以是sgd函数 也可以是框架内的内置函数
@@ -198,14 +198,14 @@ def std_train_epoch(net, train_set, loss_function, updater):  # 模型在训练�
         else:  # 使用的是定制的优化器和损失函数
             loss.sum().backward()
             updater(X.shape[0])
-    metric.add(float(loss.sum()), std_accuracy(y_hat, y), y.numel())
+    metric.add(float(loss.sum()), accuracy(y_hat, y), y.numel())
     return metric[0] / metric[2], metric[1] / metric[2]  # 返回训练损失和训练精度
 
-def std_prediction(net, test_set, n=6):
+def prediction(net, test_set, n=6):
     for X, y in test_set:
         _, axes = plt.subplots(1, n, figsize=(8, 8))
-        true_labels = std_get_MINST_labels(y)
-        pred_labels = std_get_MINST_labels(net(X).argmax(axis=1))
+        true_labels = get_MINST_labels(y)
+        pred_labels = get_MINST_labels(net(X).argmax(axis=1))
         titles = ['T:' + true + '\n' + 'P:' + pred for true,
                   pred in zip(true_labels, pred_labels)]
         for i in range(n):
@@ -213,7 +213,7 @@ def std_prediction(net, test_set, n=6):
             axes[i].set_title(titles[i])
             axes[i].axis('off')
 
-def std_prediction_gpu(net, test_set, n=6, device=None, resized=False):
+def prediction_gpu(net, test_set, n=6, device=None, resized=False):
     transform = transforms.Compose([
                             transforms.ToPILImage(),
                             transforms.Resize((28, 28)),
@@ -229,8 +229,8 @@ def std_prediction_gpu(net, test_set, n=6, device=None, resized=False):
             X = X.to(device)
         y = y.to(device)
         _, axes = plt.subplots(1, n, figsize=(8, 8))
-        true_labels = std_get_MINST_labels(y)
-        pred_labels = std_get_MINST_labels(net(X).argmax(axis=1))
+        true_labels = get_MINST_labels(y)
+        pred_labels = get_MINST_labels(net(X).argmax(axis=1))
         titles = ['T:' + true + '\n' + 'P:' + pred for true,
                   pred in zip(true_labels, pred_labels)]
         
