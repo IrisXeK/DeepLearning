@@ -294,15 +294,20 @@ def masked_softmax(X, valid_lens=None):
         return nn.functional.softmax(X.reshape(shape), dim=-1)
 
 def sequence_mask(X, valid_len, value=0):
-        maxlen = X.size(1)
-        mask = torch.arange((maxlen), dtype=torch.float32, device=X.device)[None, :] < valid_len[:, None] # 应用广播机制进行比较
-        # 这里, torch.arange获取了一个从0到maxlen-1的整数序列并用[None, :]升为shape=(1, maxlen)的二维矩阵。
-        # valid_len通过[:, None]升为shape=(len(valid_len), 1)的二维矩阵。 
-        # 这里的通过None升维的操作和unsqueeze()是一样的
-        # 之后进行比较 通过广播机制, arange数组中长度<valid_len的部分得到True, 其他为False。 得到了一张布尔表mask
-        # 通过布尔表, 进行X[~mask]=value即可通过切片把X对应的位置替换为value指定的值。
-        X[~mask] = value
-        return X
+    """
+    参数:\n
+        X : 2D张量\n
+        valid_len : 1D张量\n
+    """
+    maxlen = X.size(1)
+    mask = torch.arange((maxlen), dtype=torch.float32, device=X.device)[None, :] < valid_len[:, None] # 应用广播机制进行比较
+    # 这里, torch.arange获取了一个从0到maxlen-1的整数序列并用[None, :]升为shape=(1, maxlen)的二维矩阵。
+    # valid_len通过[:, None]升为shape=(len(valid_len), 1)的二维矩阵。 
+    # 这里的通过None升维的操作和unsqueeze()是一样的
+    # 之后进行比较 通过广播机制, arange数组中长度<valid_len的部分得到True, 其他为False。 得到了一张布尔表mask
+    # 通过布尔表, 进行X[~mask]=value即可通过切片把X对应的位置替换为value指定的值。
+    X[~mask] = value
+    return X
 
 def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5,2.5), cmap='Reds'):
     """
