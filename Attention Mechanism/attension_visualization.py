@@ -6,6 +6,7 @@ def show_heatmaps(matrices, xlabel, ylabel, titles=None, figsize=(2.5,2.5), cmap
     显示矩阵热图的函数\n
     参数:\n
         matrices : 一个四维矩阵列表, shape=(要显示的行数，要显示的列数，查询的数目，键的数目)\n
+                    一个矩阵是一个注意力头的权重矩阵
     """
     num_rows, num_cols = matrices.shape[0], matrices.shape[1]
     fig, axes = plt.subplots(num_rows, num_cols, figsize=figsize,
