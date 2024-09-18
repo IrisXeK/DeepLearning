@@ -271,9 +271,33 @@ class EncoderDecoder(nn.Module):
         self.decoder = decoder
 
     def forward(self, encoder_inputs, decoder_inputs, *args):
-        encoder_outputs = self.encoder(encoder_inputs)
+        encoder_outputs = self.encoder(encoder_inputs, *args)
         decoder_state = self.decoder.init_state(encoder_outputs, *args)
         return self.decoder(decoder_inputs, decoder_state)
+
+class PositionalEncoding(nn.Module):
+    """
+    位置编码:
+    在完全依赖于注意力机制的模型中， 为了并行计算, 序列的位置信息会被忽略
+    位置编码的目的就是给予模型词元的位置信息
+    """
+    def __init__(self, num_hiddens, dropout, max_len=1000):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        # 创建一个足够长的P
+        # P是位置编码矩阵, 存储序列中每个位置的位置编码信息, 这些编码之后会被添加到输入embedding中
+
+        self.P = torch.zeros((1, max_len, num_hiddens)) # 长度为1的第一维为了广播机制
+        X = torch.arange(max_len, dtype=torch.float32).reshape(-1, 1) / torch.pow(10000, torch.arange(0, num_hiddens, 2, dtype=torch.float32) / num_hiddens)
+        self.P[:, :, 0::2] = torch.sin(X) # 奇数索引位置编码
+        self.P[:, :, 1::2] = torch.cos(X) # 偶数索引位置编码
+
+    def forward(self, X):
+        """
+        X : shape=(batch_size, seq_len, num_hiddens)
+        """
+        X = X + self.P[:, :X.shape[1], :].to(X.device)
+        return self.dropout(X)
 
 def masked_softmax(X, valid_lens=None):
     """
@@ -292,6 +316,22 @@ def masked_softmax(X, valid_lens=None):
             valid_lens = valid_lens.reshape(-1)
         X = sequence_mask(X.reshape(-1, shape[-1]), valid_lens, value=-1e6) # 最后一轴上被掩蔽的元素使用一个非常大的负值替换，从而其softmax输出为0
         return nn.functional.softmax(X.reshape(shape), dim=-1)
+
+def bleu(pred_seq, label_seq, k):
+    """计算BLEU"""
+    pred_tokens, label_tokens = pred_seq.split(' '), label_seq.split(' ')
+    len_pred, len_label = len(pred_tokens), len(label_tokens)
+    score = math.exp(min(0, 1 - len_label / len_pred)) # 初始惩罚项,用于降低较短序列(因为容易预测)的分数 公式的前半部分
+    for n in range(1, min(k, len_pred)+1):
+        num_matches, label_ngram_cnt = 0, collections.defaultdict(int)
+        for i in range(len_label - n + 1): # 初始化标签序列的n元语法表
+            label_ngram_cnt[' '.join(label_tokens[i: i + n])] += 1
+        for i in range(len_pred - n + 1): # 查找预测序列中有多少和标签序列表匹配的n元语法
+            if label_ngram_cnt[' '.join(pred_tokens[i: i + n])] > 0:
+                num_matches += 1
+                label_ngram_cnt[' '.join(pred_tokens[i: i + n])] -= 1
+        score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n)) # p_n * 1/2^n 公式的后半部分
+    return score
 
 def sequence_mask(X, valid_len, value=0):
     """
@@ -457,3 +497,44 @@ def seq2seq_train(net, data_iter, lr, num_epochs, target_vocab, device):
     print(f"损失:{metric[0]/metric[1]:.3f}, {sum_tokens/timer.get_elapsed_time():.1f} tokens/秒 在 {str(device)}上")
     res.plot_res()
 
+def seq2seq_predict(net, src_sentence, src_vocab, tgt_vocab, 
+                    num_steps, device, save_attention_weights=False):
+    """序列到序列模型的预测"""
+
+    def truncate_pad(line, num_steps, padding_token):
+            """
+            通过截断(truncation)和 填充(padding)方式实现一次只处理一个小批量的文本序列。\n
+            假设同一个小批量中的每个序列都应该具有相同的长度num_steps,那么如果文本序列的词元数目少于num_steps时,\n
+            我们将继续在其末尾添加特定的“<pad>”词元, 直到其长度达到num_steps。\n
+            反之,我们将截断文本序列时,只取其前num_steps 个词元，并且丢弃剩余的词元。\n
+            这样，每个文本序列将具有相同的长度，以便以相同形状的小批量进行加载。\n
+            参数:\n
+                line : 一个文本序列\n
+                num_steps : 同一个小批量中所有文本序列的最大长度。\n
+                padding_token : 用于填充的特殊词元。\n
+            返回:\n
+                list : 截断或填充后的文本序列。\n
+            """
+            if len(line) > num_steps:
+                return line[:num_steps] # 截断
+            else:
+                return line + [padding_token] * (num_steps - len(line)) # 填充
+    net.eval()
+    src_tokens = src_vocab[src_sentence.lower().split(' ')] + [src_vocab['<eos>']] # 给src_tokens加上'<eos>'
+    encoder_valid_len = torch.tensor([len(src_tokens)], device=device)
+    src_tokens = truncate_pad(src_tokens, num_steps, src_vocab['<pad>']) # 对源词元进行截断和填充
+    encoder_X = torch.unsqueeze(torch.tensor(src_tokens, dtype=torch.long, device=device), dim=0) # 添加批量轴
+    encoder_outputs = net.encoder(encoder_X, encoder_valid_len)
+    decoder_state = net.decoder.init_state(encoder_outputs, encoder_valid_len)
+    decoder_X = torch.unsqueeze(torch.tensor([tgt_vocab['<bos>']], dtype=torch.long, device=device), dim=0) # 添加批量轴
+    output_seq, attention_weight_seq = [], []
+    for _ in range(num_steps):
+        Y, decoder_state = net.decoder(decoder_X, decoder_state) # Y.shape=(1, 1, tgt_vocab_size)
+        decoder_X = Y.argmax(dim=2) # 使用具有最高可能性的词元, 作为解码器在下一时间步的输入
+        pred = decoder_X.squeeze(dim=0).type(torch.int32).item()
+        if save_attention_weights: # 保存注意力权重
+            attention_weight_seq.append(net.decoder.attention_weights)
+        if pred == tgt_vocab['<eos>']: # 一旦结束词元被预测,输出序列的生成就完成了
+            break
+        output_seq.append(pred)
+    return ' '.join(tgt_vocab.to_tokens(output_seq)), attention_weight_seq
