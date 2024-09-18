@@ -302,9 +302,9 @@ class PositionalEncoding(nn.Module):
 def masked_softmax(X, valid_lens=None):
     """
     带遮蔽的softmax函数, 通过在最后一个轴上遮蔽元素来执行softmax操作\n
-    参数:\n
-        X : 3D张量\n
-        valid_lenss : 1D或2D张量\n
+    Parameters:
+        X : 3D张量
+        valid_lens : 1D或2D张量
     """
     if valid_lens is None:
         return nn.functional.softmax(X, dim=-1)
@@ -333,16 +333,17 @@ def bleu(pred_seq, label_seq, k):
         score *= math.pow(num_matches / (len_pred - n + 1), math.pow(0.5, n)) # p_n * 1/2^n 公式的后半部分
     return score
 
-def sequence_mask(X, valid_len, value=0):
+def sequence_mask(X, valid_lens, value=0):
     """
-    参数:\n
-        X : 2D张量\n
-        valid_len : 1D张量\n
+    将X中的每个序列(行)中在valid_lens指定位置以后的元素设为value
+    Parameters:
+        X : 2D张量, 每一行是一个序列
+        valid_lens : 1D张量, 每一个元素表示X中每一行的有效长度
     """
     maxlen = X.size(1)
-    mask = torch.arange((maxlen), dtype=torch.float32, device=X.device)[None, :] < valid_len[:, None] # 应用广播机制进行比较
+    mask = torch.arange((maxlen), dtype=torch.float32, device=X.device)[None, :] < valid_lens[:, None] # 应用广播机制进行比较
     # 这里, torch.arange获取了一个从0到maxlen-1的整数序列并用[None, :]升为shape=(1, maxlen)的二维矩阵。
-    # valid_len通过[:, None]升为shape=(len(valid_len), 1)的二维矩阵。 
+    # valid_lens通过[:, None]升为shape=(len(valid_lens), 1)的二维矩阵。 
     # 这里的通过None升维的操作和unsqueeze()是一样的
     # 之后进行比较 通过广播机制, arange数组中长度<valid_len的部分得到True, 其他为False。 得到了一张布尔表mask
     # 通过布尔表, 进行X[~mask]=value即可通过切片把X对应的位置替换为value指定的值。
